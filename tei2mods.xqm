@@ -25,32 +25,6 @@ import module namespace functx="http://www.functx.com";
 declare namespace mods="http://www.loc.gov/mods/v3";
 declare namespace tei="http://www.tei-c.org/ns/1.0";
 
-(:
-
-- do something with the TEI header...
-- for the biblStruct, you need to consider the analytic, monographic, and series level as well as other items beyond it
-- analyti
-
-
-functions needed:
-
-- process listBibls?
-- process biblStruct (calls functions for analytic, monogr, and series)
-- process analytic
-- process monogr
-- process series
-
-- process titles
-- names (handling name forms, roles, etc.)
-- genre
-- tags becomes subjects
-
-
-
-- URIs?
-
-:)
-
 declare variable $tei2mods:teins := "http://www.tei-c.org/ns/1.0";
 declare variable $tei2mods:modsns := "http://www.loc.gov/mods/v3";
 
@@ -68,24 +42,22 @@ declare variable $tei2mods:default-type-of-resource :=
 declare function tei2mods:convert-biblStruct-to-mods($biblStruct as node())
 as node()
 {
-    let $analytic := tei2mods:convert-analytic-to-mods($biblStruct/tei:analytic, $biblStruct/tei:monogr/tei:title/@level/string())
+    let $analytic := tei2mods:convert-analytic-to-mods($biblStruct/tei:analytic, $biblStruct/tei:monogr[1]/tei:title[1]/@level/string())
 
-    let $series := tei2mods:convert-series-to-mods($biblStruct/tei:series)
+    let $series := tei2mods:convert-series-to-mods($biblStruct/tei:series[1])
 
 
     let $mods := 
-        if($analytic) then tei2mods:convert-monogr-to-mods($biblStruct/tei:monogr, $series, $analytic)
-        else tei2mods:convert-monogr-to-mods($biblStruct/tei:monogr, $series)
+        if($analytic) then tei2mods:convert-monogr-to-mods($biblStruct/tei:monogr[1], $series, $analytic)
+        else tei2mods:convert-monogr-to-mods($biblStruct/tei:monogr[1], $series)
 
-    (: Update $mods to include the idnos...needs a function probably?
-        - Syriaca.org idno needs to become part of the extra field as deprecated key\
-        - Zotero should not be needed since we will ignore those (b/c we can just export as Zotero RDF and import using the zotcsv scripts)
-            - this includes both zotero.org uris in idno[@type="URI"] and idno[@type="Zotero"] that have the tags
-        - Worldcat URIs can possibly be processed to get the OCLC number for the extra field
-        - ISSNs; ISBNs; callNumber can reference practices in MODS (check how these would export first)
-        - other URIs can be put into the URL field or into extra field as urls:)
+    let $processedIdnos := tei2mods:convert-idnos-to-mods($biblStruct//tei:idno)
 
-    return $mods
+    return element {QName($tei2mods:modsns, "mods")} {
+        $mods/*[name() != "relatedItem"],
+        $processedIdnos,
+        $mods/mods:relatedItem
+    }
 };
 
 declare function tei2mods:convert-analytic-to-mods($analytic as node()?, $monogrType as xs:string)
@@ -175,7 +147,7 @@ as node()
     let $typeOfResource := $tei2mods:default-type-of-resource (:might not need assignment...:)
 
     let $genre := 
-        switch($monogr/tei:title/@level/string())
+        switch($monogr/tei:title[1]/@level/string())
         case "j" return tei2mods:create-mods-genre("journal", "margt")
         case "m" return (tei2mods:create-mods-genre("book", "local"), tei2mods:create-mods-genre("book", "marcgt"))
         default return ()
@@ -194,14 +166,41 @@ as node()
         else ()
     
     let $volInfo := 
-        if($monogr/tei:biblScope[@unit="vol"]) then
-            element {QName($tei2mods:modsns, "part")} {
-                element {QName($tei2mods:modsns, "detail")} {
-                    attribute {"type"} {"volume"},
-                    element {QName($tei2mods:modsns, "number")} {
-                        $monogr/tei:biblScope[@unit="vol"]/text()
-                    }
+        if($monogr/tei:biblScope[@unit="vol" or unit="tomus"]) then
+            element {QName($tei2mods:modsns, "detail")} {
+                attribute {"type"} {"volume"},
+                element {QName($tei2mods:modsns, "number")} {
+                    $monogr/tei:biblScope[@unit="vol"]/text()
                 }
+            }
+        else ()
+    
+    let $issueInfo := 
+        if($monogr/tei:biblScope[@unit="issue"]) then
+            element {QName($tei2mods:modsns, "detail")} {
+                attribute {"type"} {"issue"},
+                element {QName($tei2mods:modsns, "number")} {
+                    $monogr/tei:biblScope[@unit="issue"]/text()
+                }
+            }
+        else ()
+    
+    let $pageRange :=
+        if($monogr/tei:biblScope[@unit="page" or @unit="pp" or @unit="col"]) then
+            element {QName($tei2mods:modsns, "extent")} {
+                attribute {"unit"} {"pages"},
+                element {QName($tei2mods:modsns, "list")} {
+                    $monogr/tei:biblScope[@unit="page" or @unit="pp" or @unit="col"]//text()
+                    => string-join(" ")
+                    => normalize-space()
+                }
+            }
+        else ()
+
+    let $part :=
+        if($volInfo or $issueInfo or $pageRange) then
+            element {QName($tei2mods:modsns, "part")} {
+                $volInfo, $issueInfo, $pageRange
             }
         else ()
         
@@ -227,7 +226,7 @@ as node()
                 $monogr/tei:imprint/tei:date/text()
             },
             element {QName($tei2mods:modsns, "issuance")} {
-                switch($monogr/tei:title/@level/string())
+                switch($monogr/tei:title[1]/@level/string())
                 case "j" return "continuing"
                 case "m" return "monographic"
                 default return ()
@@ -252,7 +251,7 @@ as node()
         $genre,
         $names,
         $extent,
-        $volInfo,
+        $part,
         $originInfo,
         $language,
         functx:remove-elements($seriesMods, "name")
@@ -378,6 +377,59 @@ as node()
     }
 };
 
-(:
-IDNOS!!!!
-:)
+declare function tei2mods:convert-idnos-to-mods($idnos as node()+)
+as node()+
+{
+    let $els :=
+        for $idno in $idnos
+        return 
+            switch($idno/@type/string())
+            case "ISBN" return element {QName($tei2mods:modsns, "identifier")} {attribute {"type"} {"isbn"}, $idno/text()}
+            case "ISSN" return element {QName($tei2mods:modsns, "identifier")} {attribute {"type"} {"issn"}, $idno/text()}
+            case "callNumber" return element {QName($tei2mods:modsns, "classification")} {attribute {"authorityURI"} {"http://id.loc.gov/vocabulary/classSchemes/lcc"}, $idno/text()}
+            case "URI" return tei2mods:process-uri($idno)
+            default return ()
+    
+    let $extraData := $els/self::*[name() = "extra"]
+    let $extraData :=
+        for $e in $extraData
+        return $e/@key/string()||": "||$e/text()
+    let $extraData := string-join($extraData, "\n")
+    let $extraNote := 
+        element {QName($tei2mods:modsns, "note")} {
+            attribute {"type"} {"extra"},
+            $extraData
+        }
+    return ($els/self::*[name() != "extra"], $extraNote)
+};
+
+(:Returns either a mods:identifer, mods:location/mods:url, or an extra element 
+: The latter will be used to create the 'extra' field on zotero import :)
+declare function tei2mods:process-uri($idno as node())
+as node()?
+{
+    if(contains($idno/text(), "dx.doi")) then
+        element {QName($tei2mods:modsns, "identifier")}
+        {
+            attribute {"type"} {"doi"},
+            $idno/text() => substring-after("dx.doi.org/")
+        }
+    else if(contains($idno/text(), "worldcat")) then
+        element {"extra"} {
+            attribute {"key"} {"OCLC"},
+            $idno/text() => substring-after("oclc/")
+        }
+    else if (contains($idno/text(), "syriaca")) then
+        element {"extra"} {
+            attribute {"key"} {"deprecated"},
+            $idno/text()
+        }
+    else 
+        element {QName($tei2mods:modsns, "location")}
+        {
+            element {QName($tei2mods:modsns, "url")} {
+                attribute {"usage"} {"primary"},
+                $idno/text()
+            }
+        }
+};
